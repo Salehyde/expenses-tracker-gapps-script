@@ -2,7 +2,7 @@
 
 A personal expense dashboard that reads expenses logged through a Google Form and shows them as charts in a private web app. Everything runs inside Google Apps Script, and the sheet is never shared publicly. This repository holds the code for documentation and backup.
 
-![Data pipeline](architecture.svg)
+![Data pipeline](data-pipeline-architecture.png)
 
 ## What it shows
 
