@@ -1,82 +1,94 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Expense dashboard</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link
-      href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,600;12..96,800&display=swap"
-      rel="stylesheet"
-    />
-    <?!= include("Style"); ?>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
-  </head>
-  <body>
-    <main>
-      <section class="hero">
-        <div class="topbar">
-          <div class="label" id="curLabel">This month</div>
-          <button
-            id="refresh"
-            type="button"
-            title="Reload the latest data from your sheet"
-          >
-            <span class="spinner">↻</span> Refresh
-          </button>
-        </div>
-        <div class="big" id="cur">–</div>
-        <div class="prev">
-          Last month: <b id="prev">–</b><span class="delta" id="delta"></span>
-        </div>
-        <div id="status">Loading…</div>
-      </section>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Expense dashboard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,600;12..96,800&display=swap" rel="stylesheet">
+<script>
+  // Set the saved theme before the page paints (avoids a light/dark flash)
+  (function(){var m="auto";try{m=localStorage.getItem("expenseTheme")||"auto"}catch(e){}
+  var d=m==="dark"||(m!=="light"&&matchMedia("(prefers-color-scheme: dark)").matches);
+  document.documentElement.setAttribute("data-theme",d?"dark":"light");})();
+</script>
+<?!= include("Style"); ?>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+</head>
+<body>
+<main>
+  <section class="hero">
+    <div class="topbar">
+      <div class="label" id="curLabel">This month</div>
+      <div class="actions">
+        <label class="auto-opt"><input type="checkbox" id="themeAuto" checked> Match my device</label>
+        <label class="switch" title="Switch between light and dark mode">
+          <span aria-hidden="true">☀</span>
+          <input type="checkbox" id="themeSwitch" role="switch" aria-label="Dark mode">
+          <span aria-hidden="true">☾</span>
+        </label>
+        <button id="refresh" type="button" title="Reload the latest data from your sheet"><span class="spinner">↻</span> Refresh</button>
+      </div>
+    </div>
+    <div class="big" id="cur">–</div>
+    <div class="prev">Last month: <b id="prev">–</b><span class="delta" id="delta"></span></div>
+    <div id="status">Loading…</div>
+  </section>
 
-      <section class="card">
-        <h2>Total spending by month</h2>
-        <div class="range-info"><span id="rangeText"></span></div>
-        <div class="range">
-          <input
-            type="range"
-            id="rStart"
-            min="0"
-            value="0"
-            aria-label="Start month"
-          />
-          <input
-            type="range"
-            id="rEnd"
-            min="0"
-            value="0"
-            aria-label="End month"
-          />
-        </div>
-        <div class="range-ends">
-          <span id="rangeMin"></span><span id="rangeMax"></span>
-        </div>
-        <div class="scroll">
-          <div class="tall" id="totalWrap">
-            <canvas id="totalChart"></canvas>
-          </div>
-        </div>
-      </section>
+  <section class="card">
+    <h2>Total spending by month</h2>
+    <div class="range-info"><span id="rangeText"></span></div>
+    <div class="range">
+      <input type="range" id="rStart" min="0" value="0" aria-label="Start month">
+      <input type="range" id="rEnd" min="0" value="0" aria-label="End month">
+    </div>
+    <div class="range-ends"><span id="rangeMin"></span><span id="rangeMax"></span></div>
+    <div class="scroll"><div class="tall" id="totalWrap"><canvas id="totalChart"></canvas></div></div>
+  </section>
 
-      <section class="card">
-        <h2>Share of each month’s spending by type</h2>
-        <div class="tall"><canvas id="shareChart"></canvas></div>
-      </section>
+  <section class="card">
+    <div class="hm-head">
+      <h2>Daily spending heatmap</h2>
+      <div class="seg" id="hmMode">
+        <button type="button" data-m="excl" class="on"></button>
+        <button type="button" data-m="incl"></button>
+      </div>
+    </div>
+    <div class="hm-nav">
+      <button type="button" id="hmPrev" class="nav-btn" aria-label="Previous month">‹</button>
+      <select id="hmMonth" aria-label="Month"></select>
+      <button type="button" id="hmNext" class="nav-btn" aria-label="Next month">›</button>
+    </div>
+    <div class="hm-body">
+      <div class="hm-cal" id="hmCal"></div>
+      <div class="hm-side">
+        <div class="hm-total" id="hmTotal"></div>
+        <div class="hm-meta" id="hmAvg"></div>
+        <div class="hm-meta" id="hmBest"></div>
+        <div class="hm-meta" id="hmExtreme"></div>
+        <div class="lg-title">Spending per day (fixed scale)</div>
+        <div id="hmLegend"></div>
+      </div>
+    </div>
+    <div class="hm-tip" id="hmTip" role="tooltip"></div>
+  </section>
 
-      <section>
-        <div class="grid-head">
-          <h2>Monthly spending by type</h2>
-          <div class="seg" id="scaleToggle">
-            <button type="button" data-s="own" class="on">Own scale</button>
-            <button type="button" data-s="shared">Shared scale</button>
-          </div>
-        </div>
-        <div class="grid" id="grid"></div>
-      </section>
-    </main>
-    <?!= include("Script"); ?>
-  </body>
+  <section class="card">
+    <h2>Share of each month’s spending by type</h2>
+    <div class="tall"><canvas id="shareChart"></canvas></div>
+  </section>
+
+  <section>
+    <div class="grid-head">
+      <h2>Monthly spending by type</h2>
+      <div class="seg" id="scaleToggle">
+        <button type="button" data-s="own" class="on">Own scale</button>
+        <button type="button" data-s="shared">Shared scale</button>
+      </div>
+    </div>
+    <div class="grid" id="grid"></div>
+  </section>
+</main>
+<?!= include("Script"); ?>
+</body>
 </html>

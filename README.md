@@ -10,6 +10,8 @@ A personal expense dashboard that reads expenses logged through a Google Form an
 - **Total spending by month:** a line chart with a start/end month slider and a label on every point
 - **Share of spending by type:** a 100% stacked bar chart, one bar per month
 - **Spending by type:** a small line chart for each type, with last month, average and peak figures, a dashed "month so far" segment, and an own/shared scale toggle
+- **Daily heatmap:** a calendar for any recorded month, with each day shaded on a fixed scale. Hover (or tap) a day to see its total and top types, and switch between months
+- **Light/dark mode:** a switch at the top right, plus a "Match my device" box that follows your device's setting (the default). The choice is remembered when the browser allows it
 - **Refresh button** to load newly logged expenses without reloading the page
 
 ## How the data flows
@@ -62,6 +64,8 @@ Set in `Script.html`:
 - `CHART_CATEGORIES`: the types shown in the stacked bar chart and the small charts, in display order. Names must match the sheet (case is ignored).
 - `CREDIT_CATEGORIES`: types that are always counted as negative, such as refunds. They reduce the monthly total but do not appear in the type charts.
 - `CURRENCY`, `MONTHS_SHOWN`: currency symbol, and how many recent months the stacked bar and small charts cover. The total chart covers your whole history and the slider picks the period.
+- `HEATMAP_BINS`: the four S$-per-day edges that set the heatmap's six shades (default 10, 25, 50, 100). Days at or above the last edge get the darkest shade. Keep exactly four values.
+- `HEATMAP_EXCLUDE`: types left out of the heatmap unless "Incl." is selected (default `Monthly`). Credit types are never counted in the heatmap.
 - `DATE_ORDER`: only used if a date arrives as text rather than a real date (`"DMY"` or `"MDY"`).
 
 Any type that is not listed still counts towards the totals, and its name appears in the status line under the large figure, which helps catch spelling mismatches.
@@ -84,6 +88,4 @@ Any type that is not listed still counts towards the totals, and its name appear
 
 - The month slider controls only the total chart. The other charts always show the last `MONTHS_SHOWN` months.
 - The current month is partial, so its figures are "so far" and are left out of averages and peaks.
-- Charts load Chart.js from the cdnjs CDN, so the page needs an internet connection.
-th is partial, so its figures are "so far" and are left out of averages and peaks.
 - Charts load Chart.js from the cdnjs CDN, so the page needs an internet connection.

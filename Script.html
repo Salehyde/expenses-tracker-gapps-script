@@ -1,517 +1,462 @@
 <script>
-  /* ================= CONFIG – edit these ================= */
-  const CONFIG = {
-    // Sheet name and column headers are set at the top of Code.gs
-    DATE_ORDER: "DMY", // only used if a date arrives as text: "DMY" or "MDY"
-    CURRENCY: "S$",
-    MONTHS_SHOWN: 12,
+/* ================= CONFIG – edit these ================= */
+const CONFIG = {
+  // Sheet name and column headers are set at the top of Code.gs
+  DATE_ORDER: "DMY",                  // only used if a date arrives as text: "DMY" or "MDY"
+  CURRENCY: "S$",
+  MONTHS_SHOWN: 12,
 
-    // Types shown in the share bar chart and the small charts (in this order)
-    CHART_CATEGORIES: [
-      "Dining Out",
-      "Healthcare",
-      "Holiday",
-      "Monthly",
-      "Personal Care",
-      "Grocery Shopping",
-      "Retail Shopping",
-      "Public Transport (Ez-link)",
-      "Private Transport (Grab/Tada)",
-      "Snacks",
-      "Others",
-    ],
-    // Types that reduce your total. Whatever sign you enter in the form, these count as negative.
-    CREDIT_CATEGORIES: ["BCRS (-ve credit)", "Others (-ve credit)"],
-  };
-  /* ======================================================= */
+  // Types shown in the share bar chart and the small charts (in this order)
+  CHART_CATEGORIES: [
+    "Dining Out", "Healthcare", "Holiday", "Monthly", "Personal Care",
+    "Grocery Shopping", "Retail Shopping", "Public Transport (Ez-link)",
+    "Private Transport (Grab/Tada)", "Snacks", "Others"
+  ],
+  // Types that reduce your total. Whatever sign you enter in the form, these count as negative.
+  CREDIT_CATEGORIES: ["BCRS (-ve credit)", "Others (-ve credit)"],
 
-  const PALETTE = [
-    "#2347d8",
-    "#e8590c",
-    "#0b9e7a",
-    "#c2255c",
-    "#f2b01e",
-    "#7048e8",
-    "#1098ad",
-    "#74b816",
-    "#d6336c",
-    "#5c6b8a",
-    "#a0714f",
-  ];
-  const norm = (s) => String(s).trim().toLowerCase();
-  const CHART_KEYS = CONFIG.CHART_CATEGORIES.map(norm);
-  const CREDIT_KEYS = CONFIG.CREDIT_CATEGORIES.map(norm);
+  // Daily heatmap: lower edges (S$ per day) of the shades. Keep exactly 4 values (gives 6 shades).
+  // Below the first edge = lightest spend shade; at or above the last edge = darkest ("extreme").
+  HEATMAP_BINS: [10, 25, 50, 100],
+  // Types left out of the heatmap unless "Incl." is chosen (large recurring payments would swamp the scale)
+  HEATMAP_EXCLUDE: ["Monthly"]
+};
+/* ======================================================= */
 
-  const css = (n) =>
-    getComputedStyle(document.documentElement).getPropertyValue(n).trim();
-  const fmtMonth = (d) =>
-    d.toLocaleString("en-GB", { month: "short" }) +
-    " ’" +
-    String(d.getFullYear()).slice(2);
-  const money = (n) =>
-    CONFIG.CURRENCY +
-    n.toLocaleString("en-SG", {
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2,
-    });
-  const money0 = (n) => CONFIG.CURRENCY + Math.round(n).toLocaleString("en-SG");
-  const sum = (a) => a.reduce((x, y) => x + y, 0);
-  function status(text, isError) {
-    const el = document.getElementById("status");
-    el.textContent = text;
-    el.className = isError ? "err" : "";
-  }
+const PALETTE = ["#2347d8","#e8590c","#0b9e7a","#c2255c","#f2b01e","#7048e8",
+                 "#1098ad","#74b816","#d6336c","#5c6b8a","#a0714f"];
+const norm = s => String(s).trim().toLowerCase();
+const CHART_KEYS = CONFIG.CHART_CATEGORIES.map(norm);
+const CREDIT_KEYS = CONFIG.CREDIT_CATEGORIES.map(norm);
 
-  /* ---------- Parsing ---------- */
-  function parseDate(s) {
-    s = s.trim();
-    const m = s.match(/^(\d{1,4})[\/\-.](\d{1,2})[\/\-.](\d{1,4})/);
-    if (!m) {
-      const d = new Date(s);
-      return isNaN(d) ? null : d;
-    }
-    const a = +m[1],
-      b = +m[2],
-      c = +m[3];
-    let y, mo, d;
-    if (m[1].length === 4) {
-      y = a;
-      mo = b;
-      d = c;
-    } else {
-      y = c;
-      if (CONFIG.DATE_ORDER === "DMY") {
-        d = a;
-        mo = b;
-      } else {
-        mo = a;
-        d = b;
-      }
-    }
-    return new Date(y, mo - 1, d);
-  }
-  const parseAmount = (s) => parseFloat(String(s).replace(/[^0-9.\-]/g, ""));
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const fmtMonth = d => d.toLocaleString("en-GB", { month: "short" }) + " ’" + String(d.getFullYear()).slice(2);
+const money = n => CONFIG.CURRENCY + n.toLocaleString("en-SG",{minimumFractionDigits:2,maximumFractionDigits:2});
+const money0 = n => CONFIG.CURRENCY + Math.round(n).toLocaleString("en-SG");
+const sum = a => a.reduce((x,y) => x + y, 0);
+function status(text, isError){
+  const el = document.getElementById("status");
+  el.textContent = text;
+  el.className = isError ? "err" : "";
+}
 
-  /* ---------- Data loading ---------- */
-  const HAS_SERVER =
-    typeof google !== "undefined" && google.script && google.script.run;
-  function loadRows() {
-    if (!HAS_SERVER) return Promise.resolve(demoRows()); // opened outside Apps Script: sample data
-    return new Promise((resolve, reject) => {
-      google.script.run
-        .withSuccessHandler((list) =>
-          resolve(
-            list
-              .map((r) => {
-                const cat = (r.cat || "").trim();
-                let amount = parseAmount(r.amount);
-                if (CREDIT_KEYS.includes(norm(cat))) amount = -Math.abs(amount);
-                return { date: parseDate(String(r.date)), amount, cat };
-              })
-              .filter((r) => r.date && !isNaN(r.amount)),
-          ),
-        )
-        .withFailureHandler((err) =>
-          reject(new Error(err.message || String(err))),
-        )
-        .getRows();
-    });
-  }
-  function demoRows() {
-    const out = [],
-      now = new Date();
-    let seed = 7;
-    const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
-    for (let m = 29; m >= 0; m--) {
-      CONFIG.CHART_CATEGORIES.forEach((cat, i) => {
-        for (let k = 0; k < 1 + Math.floor(rnd() * 5); k++)
-          out.push({
-            date: new Date(
-              now.getFullYear(),
-              now.getMonth() - m,
-              1 + Math.floor(rnd() * 27),
-            ),
-            amount: 5 + rnd() * (20 + i * 12),
-            cat,
-          });
-      });
-      out.push({
-        date: new Date(now.getFullYear(), now.getMonth() - m, 15),
-        amount: -(1 + rnd() * 5),
-        cat: "BCRS (-ve credit)",
-      });
-    }
-    return out;
-  }
+/* ---------- Parsing ---------- */
+function parseDate(s){
+  s = s.trim();
+  const m = s.match(/^(\d{1,4})[\/\-.](\d{1,2})[\/\-.](\d{1,4})/);
+  if(!m){ const d = new Date(s); return isNaN(d) ? null : d; }
+  const a = +m[1], b = +m[2], c = +m[3];
+  let y, mo, d;
+  if(m[1].length === 4){ y = a; mo = b; d = c; }
+  else { y = c; if(CONFIG.DATE_ORDER === "DMY"){ d = a; mo = b; } else { mo = a; d = b; } }
+  return new Date(y, mo - 1, d);
+}
+const parseAmount = s => parseFloat(String(s).replace(/[^0-9.\-]/g, ""));
 
-  /* ---------- Aggregation ---------- */
-  const monthKey = (d) =>
-    d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0");
-  function aggregate(rows) {
-    const now = new Date(),
-      months = [];
-    for (let i = CONFIG.MONTHS_SHOWN - 1; i >= 0; i--)
-      months.push(new Date(now.getFullYear(), now.getMonth() - i, 1));
-    const keys = months.map(monthKey);
-    const labels = months.map(fmtMonth);
-
-    const total = keys.map(() => 0); // net of credits
-    const byCat = {};
-    CONFIG.CHART_CATEGORIES.forEach((c) => (byCat[c] = keys.map(() => 0)));
-    const unknown = new Set();
-
-    for (const r of rows) {
-      const i = keys.indexOf(monthKey(r.date));
-      if (i < 0) continue;
-      total[i] += r.amount;
-      const j = CHART_KEYS.indexOf(norm(r.cat));
-      if (j >= 0) byCat[CONFIG.CHART_CATEGORIES[j]][i] += r.amount;
-      else if (!CREDIT_KEYS.includes(norm(r.cat)))
-        unknown.add(r.cat || "(blank)");
-    }
-    // Full dataset range for the slider (first month with data → current month or latest data)
-    const stamps = rows.map((r) => r.date.getTime());
-    const first = new Date(Math.min(...stamps)),
-      lastData = new Date(Math.max(...stamps));
-    const end = lastData > now ? lastData : now;
-    const fullKeys = [],
-      fullLabels = [];
-    for (
-      let d = new Date(first.getFullYear(), first.getMonth(), 1);
-      d <= new Date(end.getFullYear(), end.getMonth(), 1);
-      d = new Date(d.getFullYear(), d.getMonth() + 1, 1)
-    ) {
-      fullKeys.push(monthKey(d));
-      fullLabels.push(fmtMonth(d));
-    }
-    const fullTotal = fullKeys.map(() => 0);
-    for (const r of rows)
-      fullTotal[fullKeys.indexOf(monthKey(r.date))] += r.amount;
-
-    return { labels, total, byCat, unknown, now, fullLabels, fullTotal };
-  }
-
-  /* ---------- Total chart: labels + month-range slider ---------- */
-  const pointLabels = {
-    // draws the value above every point
-    id: "pointLabels",
-    afterDatasetsDraw(chart) {
-      const ctx = chart.ctx,
-        ds = chart.data.datasets[0];
-      ctx.save();
-      ctx.fillStyle = css("--ink");
-      ctx.font = '600 11px "Bricolage Grotesque",system-ui,sans-serif';
-      ctx.textAlign = "center";
-      ctx.textBaseline = "bottom";
-      chart
-        .getDatasetMeta(0)
-        .data.forEach((pt, i) =>
-          ctx.fillText(money0(ds.data[i]), pt.x, pt.y - 8),
-        );
-      ctx.restore();
-    },
-  };
-  let full = { labels: [], total: [] },
-    totalChart = null,
-    sliderReady = false;
-  const rStart = document.getElementById("rStart"),
-    rEnd = document.getElementById("rEnd");
-  const PX_PER_POINT = 56; // keeps labels readable; the card scrolls sideways if needed
-
-  function initSlider() {
-    const last = full.labels.length - 1;
-    const wasAtEnd = !sliderReady || +rEnd.value >= +rEnd.max;
-    rStart.max = rEnd.max = last;
-    if (!sliderReady) {
-      rStart.value = Math.max(0, last - (CONFIG.MONTHS_SHOWN - 1)); // start on the last 12 months
-      sliderReady = true;
-    }
-    if (wasAtEnd) rEnd.value = last; // keep following the newest month
-    if (+rStart.value > +rEnd.value) rStart.value = rEnd.value;
-    document.getElementById("rangeMin").textContent = full.labels[0];
-    document.getElementById("rangeMax").textContent = full.labels[last];
-  }
-  function updateTotal() {
-    let s = +rStart.value,
-      e = +rEnd.value;
-    if (s > e) {
-      if (this === rStart) s = e;
-      else e = s;
-      rStart.value = s;
-      rEnd.value = e;
-    }
-    const labels = full.labels.slice(s, e + 1),
-      data = full.total.slice(s, e + 1);
-    document.getElementById("rangeText").textContent =
-      `${labels[0]} – ${labels[labels.length - 1]}  (${labels.length} month${labels.length > 1 ? "s" : ""}, ${money0(sum(data))} in total)`;
-    document.getElementById("totalWrap").style.width =
-      `max(100%, ${labels.length * PX_PER_POINT}px)`;
-    totalChart.data.labels = labels;
-    totalChart.data.datasets[0].data = data;
-    totalChart.resize();
-    totalChart.update();
-  }
-  rStart.addEventListener("input", updateTotal);
-  rEnd.addEventListener("input", updateTotal);
-
-  /* ---------- Rendering ---------- */
-  const charts = [];
-  const smallCharts = [];
-  let scaleMode = "own",
-    sharedMaxVal = 1;
-  function applyScale() {
-    smallCharts.forEach(({ chart, maxLabel, hasData }) => {
-      chart.options.scales.y.max =
-        scaleMode === "shared" ? sharedMaxVal : undefined;
-      chart.update();
-      maxLabel.textContent = hasData ? "max " + money0(chart.scales.y.max) : "";
-    });
-  }
-  document.querySelectorAll("#scaleToggle button").forEach((btn) =>
-    btn.addEventListener("click", () => {
-      scaleMode = btn.dataset.s;
-      document
-        .querySelectorAll("#scaleToggle button")
-        .forEach((b) => b.classList.toggle("on", b === btn));
-      applyScale();
-    }),
-  );
-
-  function render(rows) {
-    charts.splice(0).forEach((c) => c.destroy());
-    const { labels, total, byCat, unknown, now, fullLabels, fullTotal } =
-      aggregate(rows);
-    const n = total.length,
-      cur = total[n - 1],
-      prev = total[n - 2] || 0;
-    const cats = CONFIG.CHART_CATEGORIES;
-
-    document.getElementById("curLabel").textContent =
-      "Spent in " +
-      now.toLocaleString("en-GB", { month: "long", year: "numeric" });
-    document.getElementById("cur").textContent = money(cur);
-    document.getElementById("prev").textContent = money(prev);
-    const dEl = document.getElementById("delta");
-    if (prev > 0) {
-      const p = ((cur - prev) / prev) * 100;
-      dEl.textContent =
-        (p >= 0 ? "▲ " : "▼ ") + Math.abs(p).toFixed(0) + "% so far";
-      dEl.style.color = p > 0 ? "#c62828" : "#0b9e7a";
-    }
-
-    const line = css("--line");
-    Chart.defaults.font.family = '"Bricolage Grotesque",system-ui,sans-serif';
-    Chart.defaults.color = css("--mute");
-
-    // 1. Total by month (net of credits), range chosen with the slider
-    full = { labels: fullLabels, total: fullTotal };
-    initSlider();
-    charts.push(
-      (totalChart = new Chart("totalChart", {
-        type: "line",
-        data: {
-          labels: [],
-          datasets: [
-            {
-              data: [],
-              borderColor: css("--accent"),
-              backgroundColor: css("--accent") + "22",
-              fill: true,
-              tension: 0.3,
-              borderWidth: 2.5,
-              pointRadius: 3,
-            },
-          ],
-        },
-        plugins: [pointLabels],
-        options: {
-          maintainAspectRatio: false,
-          layout: { padding: { top: 24, right: 12 } },
-          plugins: {
-            legend: { display: false },
-            tooltip: { callbacks: { label: (c) => money(c.parsed.y) } },
-          },
-          scales: {
-            y: {
-              beginAtZero: true,
-              grace: "12%",
-              grid: { color: line },
-              border: { display: false },
-              ticks: { callback: (v) => money0(v) },
-            },
-            x: { grid: { display: false } },
-          },
-        },
-      })),
-    );
-    updateTotal();
-
-    // 2. Share of each month's spending by type (types 1–11 only)
-    const gross = labels.map((_, i) => sum(cats.map((c) => byCat[c][i])) || 1);
-    charts.push(
-      new Chart("shareChart", {
-        type: "bar",
-        data: {
-          labels,
-          datasets: cats.map((c, i) => ({
-            label: c,
-            raw: byCat[c],
-            backgroundColor: PALETTE[i % PALETTE.length],
-            data: byCat[c].map((v, j) => (Math.max(v, 0) / gross[j]) * 100),
-          })),
-        },
-        options: {
-          maintainAspectRatio: false,
-          scales: {
-            x: { stacked: true, grid: { display: false } },
-            y: {
-              stacked: true,
-              max: 100,
-              grid: { color: line },
-              border: { display: false },
-              ticks: { callback: (v) => v + "%" },
-            },
-          },
-          plugins: {
-            legend: { position: "bottom", labels: { boxWidth: 12 } },
-            tooltip: {
-              callbacks: {
-                label: (c) =>
-                  `${c.dataset.label}: ${c.parsed.y.toFixed(0)}% (${money(c.dataset.raw[c.dataIndex])})`,
-              },
-            },
-          },
-        },
-      }),
-    );
-
-    // 3. Small charts, one per type
-    const grid = document.getElementById("grid");
-    grid.innerHTML = "";
-    smallCharts.length = 0;
-    const last = n - 1,
-      cardBg = css("--card");
-    sharedMaxVal =
-      Math.max(1, ...cats.map((c) => Math.max(...byCat[c]))) * 1.08;
-
-    cats.forEach((c, i) => {
-      const col = PALETTE[i % PALETTE.length],
-        vals = byCat[c];
-      const done = vals.slice(0, last); // completed months only
-      const avg = sum(done) / Math.max(done.length, 1);
-      const peak = Math.max(...done, 0),
-        peakIdx = done.indexOf(peak);
-
-      const card = document.createElement("div");
-      card.className = "card";
-      const h3 = document.createElement("h3");
-      h3.textContent = c;
-      const span = document.createElement("span");
-      span.textContent = money0(vals[last]) + " this month";
-      h3.appendChild(span);
-      const m1 = document.createElement("div");
-      m1.className = "meta";
-      m1.textContent = `Last month ${money0(vals[last - 1] || 0)} · Avg ${money0(avg)}/mo`;
-      const m2 = document.createElement("div");
-      m2.className = "meta";
-      m2.textContent =
-        peak > 0
-          ? `Peak ${money0(peak)} · ${labels[peakIdx]}`
-          : "No spending in this period";
-      const wrap = document.createElement("div");
-      wrap.className = "small";
-      const canvas = document.createElement("canvas");
-      const maxLabel = document.createElement("span");
-      maxLabel.className = "scale-max";
-      wrap.append(canvas, maxLabel);
-      card.append(h3, m1, m2, wrap);
-      grid.appendChild(card);
-
-      const chart = new Chart(canvas, {
-        type: "line",
-        data: {
-          labels,
-          datasets: [
-            {
-              data: vals,
-              borderColor: col,
-              backgroundColor: col + "22",
-              fill: true,
-              tension: 0,
-              borderWidth: 2, // straight segments, no smoothing
-              pointRadius: vals.map((_, k) => (k === last ? 4 : 0)), // hollow marker on the month in progress
-              pointBackgroundColor: cardBg,
-              pointBorderColor: col,
-              pointBorderWidth: 2,
-              pointHoverRadius: 4,
-              segment: {
-                borderDash: (ctx) =>
-                  ctx.p1DataIndex === last ? [4, 3] : undefined,
-              }, // dashed = month so far
-            },
-          ],
-        },
-        options: {
-          maintainAspectRatio: false,
-          interaction: { mode: "index", intersect: false },
-          plugins: {
-            legend: { display: false },
-            tooltip: {
-              callbacks: {
-                title: (it) =>
-                  labels[it[0].dataIndex] +
-                  (it[0].dataIndex === last ? " (so far)" : ""),
-                label: (x) => money(x.parsed.y),
-              },
-            },
-          },
-          scales: {
-            x: { display: false },
-            y: { display: false, beginAtZero: true },
-          },
-        },
-      });
-      charts.push(chart);
-      smallCharts.push({ chart, maxLabel, hasData: vals.some((v) => v > 0) });
-    });
-    applyScale();
-
-    return unknown;
-  }
-
-  let rowsCache = [],
-    updatedAt = "";
-  function draw() {
-    const unknown = render(rowsCache);
-    let msg = !HAS_SERVER
-      ? "Showing sample data (not running inside Apps Script)."
-      : "Updated " + updatedAt;
-    if (unknown.size)
-      msg += ` Not charted (count in total only): ${[...unknown].join(", ")}.`;
-    status(msg);
-  }
-  async function load() {
-    const btn = document.getElementById("refresh");
-    btn.disabled = true;
-    btn.classList.add("busy");
-    if (rowsCache.length) status("Refreshing…");
-    try {
-      rowsCache = await loadRows();
-      updatedAt = new Date().toLocaleTimeString("en-GB", {
-        hour: "2-digit",
-        minute: "2-digit",
-      });
-      draw();
-    } catch (e) {
-      status(e.message, true);
-    } finally {
-      btn.disabled = false;
-      btn.classList.remove("busy");
-    }
-  }
-  document.getElementById("refresh").addEventListener("click", load);
-  matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
-    if (rowsCache.length) draw();
+/* ---------- Data loading ---------- */
+const HAS_SERVER = typeof google !== "undefined" && google.script && google.script.run;
+function loadRows(){
+  if(!HAS_SERVER) return Promise.resolve(demoRows());   // opened outside Apps Script: sample data
+  return new Promise((resolve, reject) => {
+    google.script.run
+      .withSuccessHandler(list => resolve(list.map(r => {
+        const cat = (r.cat || "").trim();
+        let amount = parseAmount(r.amount);
+        if(CREDIT_KEYS.includes(norm(cat))) amount = -Math.abs(amount);
+        return { date: parseDate(String(r.date)), amount, cat };
+      }).filter(r => r.date && !isNaN(r.amount))))
+      .withFailureHandler(err => reject(new Error(err.message || String(err))))
+      .getRows();
   });
-  load();
+}
+function demoRows(){
+  const out = [], now = new Date(); let seed = 7;
+  const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  for(let m = 29; m >= 0; m--){
+    CONFIG.CHART_CATEGORIES.forEach((cat, i) => {
+      for(let k = 0; k < 1 + Math.floor(rnd() * 5); k++)
+        out.push({ date: new Date(now.getFullYear(), now.getMonth() - m, 1 + Math.floor(rnd() * 27)),
+                   amount: 5 + rnd() * (20 + i * 12), cat });
+    });
+    out.push({ date: new Date(now.getFullYear(), now.getMonth() - m, 15), amount: -(1 + rnd() * 5), cat: "BCRS (-ve credit)" });
+  }
+  return out;
+}
+
+/* ---------- Aggregation ---------- */
+const monthKey = d => d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0");
+function aggregate(rows){
+  const now = new Date(), months = [];
+  for(let i = CONFIG.MONTHS_SHOWN - 1; i >= 0; i--) months.push(new Date(now.getFullYear(), now.getMonth() - i, 1));
+  const keys = months.map(monthKey);
+  const labels = months.map(fmtMonth);
+
+  const total = keys.map(() => 0);                       // net of credits
+  const byCat = {};
+  CONFIG.CHART_CATEGORIES.forEach(c => byCat[c] = keys.map(() => 0));
+  const unknown = new Set();
+
+  for(const r of rows){
+    const i = keys.indexOf(monthKey(r.date));
+    if(i < 0) continue;
+    total[i] += r.amount;
+    const j = CHART_KEYS.indexOf(norm(r.cat));
+    if(j >= 0) byCat[CONFIG.CHART_CATEGORIES[j]][i] += r.amount;
+    else if(!CREDIT_KEYS.includes(norm(r.cat))) unknown.add(r.cat || "(blank)");
+  }
+  // Full dataset range for the slider (first month with data → current month or latest data)
+  const stamps = rows.map(r => r.date.getTime());
+  const first = new Date(Math.min(...stamps)), lastData = new Date(Math.max(...stamps));
+  const end = lastData > now ? lastData : now;
+  const fullKeys = [], fullLabels = [];
+  for(let d = new Date(first.getFullYear(), first.getMonth(), 1);
+      d <= new Date(end.getFullYear(), end.getMonth(), 1);
+      d = new Date(d.getFullYear(), d.getMonth() + 1, 1)){
+    fullKeys.push(monthKey(d));
+    fullLabels.push(fmtMonth(d));
+  }
+  const fullTotal = fullKeys.map(() => 0);
+  for(const r of rows) fullTotal[fullKeys.indexOf(monthKey(r.date))] += r.amount;
+
+  return { labels, total, byCat, unknown, now, fullLabels, fullTotal };
+}
+
+/* ---------- Total chart: labels + month-range slider ---------- */
+const pointLabels = {            // draws the value above every point
+  id: "pointLabels",
+  afterDatasetsDraw(chart){
+    const ctx = chart.ctx, ds = chart.data.datasets[0];
+    ctx.save();
+    ctx.fillStyle = css("--ink");
+    ctx.font = '600 11px "Bricolage Grotesque",system-ui,sans-serif';
+    ctx.textAlign = "center"; ctx.textBaseline = "bottom";
+    chart.getDatasetMeta(0).data.forEach((pt, i) => ctx.fillText(money0(ds.data[i]), pt.x, pt.y - 8));
+    ctx.restore();
+  }
+};
+let full = { labels: [], total: [] }, totalChart = null, sliderReady = false;
+const rStart = document.getElementById("rStart"), rEnd = document.getElementById("rEnd");
+const PX_PER_POINT = 56;         // keeps labels readable; the card scrolls sideways if needed
+
+function initSlider(){
+  const last = full.labels.length - 1;
+  const wasAtEnd = !sliderReady || +rEnd.value >= +rEnd.max;
+  rStart.max = rEnd.max = last;
+  if(!sliderReady){
+    rStart.value = Math.max(0, last - (CONFIG.MONTHS_SHOWN - 1));   // start on the last 12 months
+    sliderReady = true;
+  }
+  if(wasAtEnd) rEnd.value = last;                                    // keep following the newest month
+  if(+rStart.value > +rEnd.value) rStart.value = rEnd.value;
+  document.getElementById("rangeMin").textContent = full.labels[0];
+  document.getElementById("rangeMax").textContent = full.labels[last];
+}
+function updateTotal(){
+  let s = +rStart.value, e = +rEnd.value;
+  if(s > e){ if(this === rStart) s = e; else e = s; rStart.value = s; rEnd.value = e; }
+  const labels = full.labels.slice(s, e + 1), data = full.total.slice(s, e + 1);
+  document.getElementById("rangeText").textContent =
+    `${labels[0]} – ${labels[labels.length-1]}  (${labels.length} month${labels.length > 1 ? "s" : ""}, ${money0(sum(data))} in total)`;
+  document.getElementById("totalWrap").style.width = `max(100%, ${labels.length * PX_PER_POINT}px)`;
+  totalChart.data.labels = labels;
+  totalChart.data.datasets[0].data = data;
+  totalChart.resize();
+  totalChart.update();
+}
+rStart.addEventListener("input", updateTotal);
+rEnd.addEventListener("input", updateTotal);
+
+/* ---------- Rendering ---------- */
+const charts = [];
+const smallCharts = [];
+let scaleMode = "own", sharedMaxVal = 1;
+function applyScale(){
+  smallCharts.forEach(({ chart, maxLabel, hasData }) => {
+    chart.options.scales.y.max = scaleMode === "shared" ? sharedMaxVal : undefined;
+    chart.update();
+    maxLabel.textContent = hasData ? "max " + money0(chart.scales.y.max) : "";
+  });
+}
+document.querySelectorAll("#scaleToggle button").forEach(btn => btn.addEventListener("click", () => {
+  scaleMode = btn.dataset.s;
+  document.querySelectorAll("#scaleToggle button").forEach(b => b.classList.toggle("on", b === btn));
+  applyScale();
+}));
+
+function render(rows){
+  charts.splice(0).forEach(c => c.destroy());
+  const { labels, total, byCat, unknown, now, fullLabels, fullTotal } = aggregate(rows);
+  const n = total.length, cur = total[n-1], prev = total[n-2] || 0;
+  const cats = CONFIG.CHART_CATEGORIES;
+
+  document.getElementById("curLabel").textContent = "Spent in " + now.toLocaleString("en-GB", { month: "long", year: "numeric" });
+  document.getElementById("cur").textContent = money(cur);
+  document.getElementById("prev").textContent = money(prev);
+  const dEl = document.getElementById("delta");
+  if(prev > 0){
+    const p = (cur - prev) / prev * 100;
+    dEl.textContent = (p >= 0 ? "▲ " : "▼ ") + Math.abs(p).toFixed(0) + "% so far";
+    dEl.style.color = p > 0 ? "#c62828" : "#0b9e7a";
+  }
+
+  const line = css("--line");
+  Chart.defaults.font.family = '"Bricolage Grotesque",system-ui,sans-serif';
+  Chart.defaults.color = css("--mute");
+
+  // 1. Total by month (net of credits), range chosen with the slider
+  full = { labels: fullLabels, total: fullTotal };
+  initSlider();
+  charts.push(totalChart = new Chart("totalChart", {
+    type: "line",
+    data: { labels: [], datasets: [{ data: [], borderColor: css("--accent"), backgroundColor: css("--accent") + "22",
+                                     fill: true, tension: .3, borderWidth: 2.5, pointRadius: 3 }] },
+    plugins: [pointLabels],
+    options: { maintainAspectRatio: false, layout: { padding: { top: 24, right: 12 } },
+      plugins: { legend: { display: false }, tooltip: { callbacks: { label: c => money(c.parsed.y) } } },
+      scales: { y: { beginAtZero: true, grace: "12%", grid: { color: line }, border: { display: false }, ticks: { callback: v => money0(v) } },
+                x: { grid: { display: false } } } }
+  }));
+  updateTotal();
+
+  // 2. Share of each month's spending by type (types 1–11 only)
+  const gross = labels.map((_, i) => sum(cats.map(c => byCat[c][i])) || 1);
+  charts.push(new Chart("shareChart", {
+    type: "bar",
+    data: { labels, datasets: cats.map((c, i) => ({
+      label: c, raw: byCat[c], backgroundColor: PALETTE[i % PALETTE.length],
+      data: byCat[c].map((v, j) => Math.max(v, 0) / gross[j] * 100) })) },
+    options: { maintainAspectRatio: false,
+      scales: { x: { stacked: true, grid: { display: false } },
+                y: { stacked: true, max: 100, grid: { color: line }, border: { display: false }, ticks: { callback: v => v + "%" } } },
+      plugins: { legend: { position: "bottom", labels: { boxWidth: 12 } },
+        tooltip: { callbacks: { label: c => `${c.dataset.label}: ${c.parsed.y.toFixed(0)}% (${money(c.dataset.raw[c.dataIndex])})` } } } }
+  }));
+
+  // 3. Small charts, one per type
+  const grid = document.getElementById("grid");
+  grid.innerHTML = "";
+  smallCharts.length = 0;
+  const last = n - 1, cardBg = css("--card");
+  sharedMaxVal = Math.max(1, ...cats.map(c => Math.max(...byCat[c]))) * 1.08;
+
+  cats.forEach((c, i) => {
+    const col = PALETTE[i % PALETTE.length], vals = byCat[c];
+    const done = vals.slice(0, last);                       // completed months only
+    const avg = sum(done) / Math.max(done.length, 1);
+    const peak = Math.max(...done, 0), peakIdx = done.indexOf(peak);
+
+    const card = document.createElement("div");
+    card.className = "card";
+    const h3 = document.createElement("h3");
+    h3.textContent = c;
+    const span = document.createElement("span");
+    span.textContent = money0(vals[last]) + " this month";
+    h3.appendChild(span);
+    const m1 = document.createElement("div");
+    m1.className = "meta";
+    m1.textContent = `Last month ${money0(vals[last - 1] || 0)} · Avg ${money0(avg)}/mo`;
+    const m2 = document.createElement("div");
+    m2.className = "meta";
+    m2.textContent = peak > 0 ? `Peak ${money0(peak)} · ${labels[peakIdx]}` : "No spending in this period";
+    const wrap = document.createElement("div");
+    wrap.className = "small";
+    const canvas = document.createElement("canvas");
+    const maxLabel = document.createElement("span");
+    maxLabel.className = "scale-max";
+    wrap.append(canvas, maxLabel);
+    card.append(h3, m1, m2, wrap);
+    grid.appendChild(card);
+
+    const chart = new Chart(canvas, {
+      type: "line",
+      data: { labels, datasets: [{
+        data: vals, borderColor: col, backgroundColor: col + "22", fill: true,
+        tension: 0, borderWidth: 2,                                           // straight segments, no smoothing
+        pointRadius: vals.map((_, k) => k === last ? 4 : 0),                  // hollow marker on the month in progress
+        pointBackgroundColor: cardBg, pointBorderColor: col, pointBorderWidth: 2, pointHoverRadius: 4,
+        segment: { borderDash: ctx => ctx.p1DataIndex === last ? [4, 3] : undefined }   // dashed = month so far
+      }] },
+      options: { maintainAspectRatio: false, interaction: { mode: "index", intersect: false },
+        plugins: { legend: { display: false }, tooltip: { callbacks: {
+          title: it => labels[it[0].dataIndex] + (it[0].dataIndex === last ? " (so far)" : ""),
+          label: x => money(x.parsed.y) } } },
+        scales: { x: { display: false }, y: { display: false, beginAtZero: true } } }
+    });
+    charts.push(chart);
+    smallCharts.push({ chart, maxLabel, hasData: vals.some(v => v > 0) });
+  });
+  applyScale();
+
+  return unknown;
+}
+
+/* ---------- Daily heatmap ---------- */
+const HM_EDGES = CONFIG.HEATMAP_BINS;
+const HM_EXCLUDE = CONFIG.HEATMAP_EXCLUDE.map(norm);
+let hmMode = "excl", hmMonthKey = "", hmDaily = {}, hmMonths = [];
+const hmCal = document.getElementById("hmCal"), hmTip = document.getElementById("hmTip"), hmSel = document.getElementById("hmMonth");
+const dayKey = d => monthKey(d) + "-" + String(d.getDate()).padStart(2, "0");
+const shade = v => v <= 0 ? 0 : 1 + HM_EDGES.filter(e => v >= e).length;     // 0 = no spend … 5 = extreme
+function shadeLabel(i){
+  const L = HM_EDGES.length;
+  if(i === 0) return "No spending";
+  if(i === 1) return "Under " + money0(HM_EDGES[0]);
+  if(i === L + 1) return money0(HM_EDGES[L - 1]) + " or more";
+  return money0(HM_EDGES[i - 2]) + " – " + money0(HM_EDGES[i - 1]);
+}
+function hmInit(){
+  const legend = document.getElementById("hmLegend");
+  for(let i = 0; i <= HM_EDGES.length + 1; i++){
+    const row = document.createElement("div"), sw = document.createElement("span"), tx = document.createElement("span");
+    row.className = "lg-row"; sw.className = "lg-swatch h" + i; tx.textContent = shadeLabel(i);
+    row.append(sw, tx); legend.appendChild(row);
+  }
+  const btns = document.querySelectorAll("#hmMode button");
+  btns[0].textContent = "Excl. " + CONFIG.HEATMAP_EXCLUDE.join(", ");
+  btns[1].textContent = "Incl. " + CONFIG.HEATMAP_EXCLUDE.join(", ");
+  btns.forEach(b => b.addEventListener("click", () => {
+    hmMode = b.dataset.m;
+    btns.forEach(x => x.classList.toggle("on", x === b));
+    if(rowsCache.length){ hmBuild(); hmDraw(); }
+  }));
+  const step = k => { const i = hmMonths.findIndex(x => x.key === hmMonthKey) + k;
+                      if(i >= 0 && i < hmMonths.length){ hmMonthKey = hmMonths[i].key; hmDraw(); } };
+  document.getElementById("hmPrev").addEventListener("click", () => step(-1));
+  document.getElementById("hmNext").addEventListener("click", () => step(1));
+  hmSel.addEventListener("change", () => { hmMonthKey = hmSel.value; hmDraw(); });
+}
+function hmBuild(){
+  hmDaily = {};
+  for(const r of rowsCache){
+    const k = norm(r.cat);
+    if(CREDIT_KEYS.includes(k)) continue;                                  // refunds/credits are not spending
+    if(hmMode === "excl" && HM_EXCLUDE.includes(k)) continue;
+    const name = r.cat || "Other";
+    const e = hmDaily[dayKey(r.date)] ??= { total: 0, by: {} };
+    e.total += r.amount;
+    e.by[name] = (e.by[name] || 0) + r.amount;
+  }
+  const stamps = rowsCache.map(r => r.date.getTime());
+  const now = new Date(), first = new Date(Math.min(...stamps)), lastD = new Date(Math.max(...stamps));
+  const end = lastD > now ? lastD : now;
+  hmMonths = [];
+  for(let d = new Date(first.getFullYear(), first.getMonth(), 1); d <= end; d = new Date(d.getFullYear(), d.getMonth() + 1, 1))
+    hmMonths.push({ key: monthKey(d), y: d.getFullYear(), m: d.getMonth(),
+                    label: d.toLocaleString("en-GB", { month: "long", year: "numeric" }) });
+  if(!hmMonths.some(x => x.key === hmMonthKey)) hmMonthKey = hmMonths[hmMonths.length - 1].key;
+  hmSel.innerHTML = "";
+  [...hmMonths].reverse().forEach(x => {
+    const o = document.createElement("option"); o.value = x.key; o.textContent = x.label; hmSel.appendChild(o);
+  });
+}
+function hmDraw(){
+  const idx = hmMonths.findIndex(x => x.key === hmMonthKey), mo = hmMonths[idx];
+  hmSel.value = mo.key;
+  document.getElementById("hmPrev").disabled = idx <= 0;
+  document.getElementById("hmNext").disabled = idx >= hmMonths.length - 1;
+
+  const today = new Date(), isCur = monthKey(today) === mo.key;
+  const nDays = new Date(mo.y, mo.m + 1, 0).getDate();
+  const offset = (new Date(mo.y, mo.m, 1).getDay() + 6) % 7;               // weeks start on Monday
+  hmCal.innerHTML = "";
+  ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"].forEach(w => {
+    const el = document.createElement("div"); el.className = "hm-dow"; el.textContent = w; hmCal.appendChild(el);
+  });
+  for(let i = 0; i < offset; i++) hmCal.appendChild(document.createElement("div"));
+
+  let total = 0, extreme = 0, best = { v: 0, d: 0 };
+  for(let d = 1; d <= nDays; d++){
+    const date = new Date(mo.y, mo.m, d), e = hmDaily[dayKey(date)], v = e ? e.total : 0;
+    const tile = document.createElement("div");
+    tile.className = "tile";
+    const future = isCur && d > today.getDate();
+    if(future) tile.classList.add("future");
+    else {
+      tile.classList.add("h" + shade(v));
+      tile.tabIndex = 0;
+      tile.setAttribute("aria-label", date.toDateString() + ": " + money(v));
+      tile.addEventListener("mouseenter", () => hmShowTip(tile, date, e, v));
+      tile.addEventListener("focus", () => hmShowTip(tile, date, e, v));
+      tile.addEventListener("mouseleave", hmHideTip);
+      tile.addEventListener("blur", hmHideTip);
+      total += v;
+      if(v >= HM_EDGES[HM_EDGES.length - 1]) extreme++;
+      if(v > best.v) best = { v, d };
+    }
+    if(isCur && d === today.getDate()) tile.classList.add("today");
+    tile.textContent = d;
+    hmCal.appendChild(tile);
+  }
+
+  const elapsed = isCur ? today.getDate() : nDays;
+  const set = (id, t) => document.getElementById(id).textContent = t;
+  set("hmTotal", money(total));
+  set("hmAvg", "Average " + money(total / elapsed) + " per day");
+  set("hmBest", best.v > 0 ? `Highest day: ${money(best.v)} on ${best.d} ${mo.label.split(" ")[0]}` : "No spending recorded");
+  set("hmExtreme", `${extreme} day${extreme === 1 ? "" : "s"} at ${money0(HM_EDGES[HM_EDGES.length - 1])} or more`);
+}
+function hmShowTip(tile, date, e, v){
+  hmTip.innerHTML = "";
+  const add = (cls, t) => { const el = document.createElement("div"); el.className = cls; el.textContent = t; hmTip.appendChild(el); return el; };
+  add("tt-date", date.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short", year: "numeric" }));
+  add("tt-total", money(v));
+  if(e) Object.entries(e.by).filter(([, x]) => x !== 0).sort((a, b) => b[1] - a[1]).slice(0, 5).forEach(([k, x]) => {
+    const row = add("tt-row", ""); const a = document.createElement("span"), b = document.createElement("span");
+    a.textContent = k; b.textContent = money0(x); row.append(a, b);
+  });
+  hmTip.style.display = "block";
+  const r = tile.getBoundingClientRect(), w = hmTip.offsetWidth, h = hmTip.offsetHeight;
+  let top = r.top - h - 8; if(top < 8) top = r.bottom + 8;
+  hmTip.style.left = Math.max(8, Math.min(r.left + r.width / 2 - w / 2, innerWidth - w - 8)) + "px";
+  hmTip.style.top = top + "px";
+}
+const hmHideTip = () => { hmTip.style.display = "none"; };
+hmInit();
+
+let rowsCache = [], updatedAt = "";
+function draw(){
+  if(!rowsCache.length){ status("No expense rows found in the sheet yet.", true); return; }
+  const unknown = render(rowsCache);
+  hmBuild(); hmDraw();
+  let msg = !HAS_SERVER ? "Showing sample data (not running inside Apps Script)." : "Updated " + updatedAt;
+  if(unknown.size) msg += ` Not charted (count in total only): ${[...unknown].join(", ")}.`;
+  status(msg);
+}
+async function load(){
+  const btn = document.getElementById("refresh");
+  btn.disabled = true; btn.classList.add("busy");
+  if(rowsCache.length) status("Refreshing…");
+  try{
+    rowsCache = await loadRows();
+    updatedAt = new Date().toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+    draw();
+  }catch(e){ status(e.message, true); }
+  finally{ btn.disabled = false; btn.classList.remove("busy"); }
+}
+document.getElementById("refresh").addEventListener("click", load);
+
+/* ---------- Theme: light / dark / match device ---------- */
+const THEME_KEY = "expenseTheme";
+const themeAuto = document.getElementById("themeAuto"), themeSwitch = document.getElementById("themeSwitch");
+const darkQuery = matchMedia("(prefers-color-scheme: dark)");
+let themeMode = "auto";                                   // "auto" | "light" | "dark"
+try{ themeMode = localStorage.getItem(THEME_KEY) || "auto"; }catch(e){}
+function applyTheme(){
+  const dark = themeMode === "dark" || (themeMode === "auto" && darkQuery.matches);
+  document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
+  themeAuto.checked = themeMode === "auto";
+  themeSwitch.checked = dark;
+  themeSwitch.disabled = themeMode === "auto";            // the switch only works once "Match my device" is off
+  if(rowsCache.length) draw();                            // charts read their colours when drawn
+}
+function setTheme(m){
+  themeMode = m;
+  try{ localStorage.setItem(THEME_KEY, m); }catch(e){}
+  applyTheme();
+}
+themeAuto.addEventListener("change", () => setTheme(themeAuto.checked ? "auto" : (themeSwitch.checked ? "dark" : "light")));
+themeSwitch.addEventListener("change", () => setTheme(themeSwitch.checked ? "dark" : "light"));
+darkQuery.addEventListener("change", () => { if(themeMode === "auto") applyTheme(); });
+applyTheme();
+load();
 </script>
